@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LangIDE — Natural English Programming</title>
+  <meta name="description" content="Write real programs in natural English. LangIDE translates sentence-like source code into C and runs it. Browser build." />
+
+  <!-- CSP: same-origin everything, no eval, no remote scripts. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';" />
+  <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="top-bar">
+    <div class="brand">
+      <span class="brand-name">LangIDE</span>
+      <span class="brand-sub">natural-english programming</span>
+    </div>
+    <div class="top-actions">
+      <label class="switch">
+        <input type="checkbox" id="debug-toggle" />
+        <span>debug</span>
+      </label>
+      <select id="example-select" aria-label="Load example program">
+        <option value="" disabled selected>examples…</option>
+      </select>
+      <button id="run-btn" type="button" class="run-btn" title="Run (⌘↵)">▶ run</button>
+      <button id="clear-btn" type="button" class="ghost-btn">clear</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="editor-pane">
+      <div class="pane-title">editor</div>
+      <textarea id="editor" spellcheck="false" autocapitalize="off" autocorrect="off">
+task main does
+  show quotes Hello, World ends quote
+done</textarea>
+    </section>
+
+    <section class="output-pane-wrap">
+      <div class="pane-title">output</div>
+      <pre id="output-pane" aria-live="polite"></pre>
+    </section>
+  </main>
+
+  <section class="definitions">
+    <div class="def-header">
+      <div class="def-title">
+        <span>language definitions</span>
+        <span class="def-count-badge">(<span id="def-count">0</span>)</span>
+      </div>
+      <div class="def-controls">
+        <label class="switch">
+          <input type="checkbox" id="defaults-toggle" />
+          <span>use defaults</span>
+        </label>
+        <select id="category-filter" aria-label="Filter by category">
+          <option value="all">all categories</option>
+        </select>
+        <input id="search-input" type="search" placeholder="search…" aria-label="Search mappings" />
+        <button id="reset-mappings-btn" type="button" class="ghost-btn" title="Reset all custom mappings">reset</button>
+      </div>
+    </div>
+
+    <div class="def-add">
+      <input id="new-custom" type="text" placeholder="your phrase (e.g. &quot;greet me&quot;)" />
+      <span class="arrow">→</span>
+      <input id="new-equiv" type="text" placeholder="becomes (e.g. print &quot;Hi Jaden&quot;)" />
+      <select id="new-category" aria-label="Category for new mapping"></select>
+      <button id="add-mapping-btn" type="button" class="run-btn">+ add</button>
+    </div>
+
+    <div id="definitions-list" class="def-list"></div>
+  </section>
+
+  <footer class="footer">
+    <span>in-browser build — runs the basic examples locally. bitwise, math, and recursion live in the <a href="https://github.com/JadenB9" rel="noopener">macOS build</a>.</span>
+  </footer>
+
+  <script src="langide.js" defer></script>
+</body>
+</html>
