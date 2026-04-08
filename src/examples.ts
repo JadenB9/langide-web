@@ -110,4 +110,40 @@ done`,
   display score
 done`,
   },
+  {
+    name: 'Math Functions',
+    code: `task main does
+  show quotes square root of 16: ends quote
+  show square root of 16
+
+  show quotes 2 to the power of 8: ends quote
+  show 2 to the power of 8
+
+  show quotes absolute value of -42: ends quote
+  show absolute value of -42
+
+  show quotes rounded 3.7: ends quote
+  show rounded 3.7
+
+  show quotes bigger of 5 and 9: ends quote
+  show bigger of 5 and 9
+done`,
+  },
+  {
+    name: 'Recursion (Factorial)',
+    code: `task factorial taking number n gives number does
+  if n at most 1 then
+    give back 1
+  otherwise
+    number smaller is call factorial with n minus 1
+    give back n times smaller
+  done
+done
+
+task main does
+  number answer is call factorial with 5
+  show quotes 5! = ends quote
+  show answer
+done`,
+  },
 ];

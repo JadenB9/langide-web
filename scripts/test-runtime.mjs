@@ -140,6 +140,49 @@ done`,
 done`,
     expect: '4',
   },
+  {
+    name: 'sqrt-builtin',
+    src: `task main does
+  decimal r is square root of 16
+  show r
+done`,
+    expect: '4',
+  },
+  {
+    name: 'pow-builtin',
+    src: `task main does
+  decimal r is 2 to the power of 8
+  show r
+done`,
+    expect: '256',
+  },
+  {
+    name: 'abs-builtin',
+    src: `task main does
+  number r is absolute value of -42
+  show r
+done`,
+    expect: '42',
+  },
+  {
+    name: 'rounded-funcs',
+    src: `task main does
+  show rounded 3.7
+  show rounded up 3.2
+  show rounded down 3.9
+done`,
+    expect: '4\n4\n3',
+  },
+  {
+    name: 'max-min-builtins',
+    src: `task main does
+  show maximum of 5 and 9
+  show minimum of 5 and 9
+  show bigger of 12 and 7
+  show smaller of 12 and 7
+done`,
+    expect: '9\n5\n12\n7',
+  },
 ];
 
 let passed = 0;

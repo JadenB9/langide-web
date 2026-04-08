@@ -66,43 +66,65 @@ const KEYWORDS = new Set([
   'stop_loop', 'skip_to_next', 'skip_ahead',
   'increase', 'decrease',
   'stop_everything', 'exit_program', 'quit',
+  // Math builtins (prefix unary)
+  'square_root_of', 'absolute_value_of',
+  'rounded_down', 'rounded_up', 'rounded',
+  'sine_of', 'cosine_of', 'tangent_of', 'logarithm_of',
+  // Two-arg builtins
+  'maximum_of', 'minimum_of', 'bigger_of', 'smaller_of',
+  // Infix exponent
+  'to_the_power_of',
 ]);
 
 // Order matters — longer phrases win. Anything in this list is detected
 // in the lexer and collapsed into a single token.
 const MULTI_WORD: [string, string][] = [
-  ['precise decimal',            'precise_decimal'],
-  ['tell me',                    'tell_me'],
-  ['print out',                  'print_out'],
-  ['ends quote',                 'ends_quote'],
-  ['give back',                  'give_back'],
-  ['and also',                   'and_also'],
-  ['or else',                    'or_else'],
-  ['or if',                      'or_if'],
-  ['divided by',                 'divided_by'],
-  ['is equal to',                'is_equal_to'],
-  ['is not equal to',            'is_not_equal_to'],
-  ['not equals',                 'not_equals'],
+  // Math (longest first to beat shorter prefixes)
   ['greater than or equal to',   'greater_than_or_equal_to'],
   ['less than or equal to',      'less_than_or_equal_to'],
+  ['is not equal to',            'is_not_equal_to'],
+  ['to the power of',            'to_the_power_of'],
+  ['absolute value of',          'absolute_value_of'],
+  ['square root of',             'square_root_of'],
+  ['keep going while',           'keep_going_while'],
+  ['precise decimal',            'precise_decimal'],
+  ['logarithm of',               'logarithm_of'],
+  ['stop everything',            'stop_everything'],
+  ['exit program',               'exit_program'],
+  ['rounded down',               'rounded_down'],
+  ['rounded up',                 'rounded_up'],
+  ['skip to next',               'skip_to_next'],
+  ['loop forever do',            'loop_forever'],
+  ['is equal to',                'is_equal_to'],
+  ['not equals',                 'not_equals'],
+  ['count from',                 'count_from'],
   ['greater than',               'greater_than'],
   ['less than',                  'less_than'],
-  ['at least',                   'at_least'],
-  ['at most',                    'at_most'],
+  ['maximum of',                 'maximum_of'],
+  ['minimum of',                 'minimum_of'],
+  ['bigger of',                  'bigger_of'],
+  ['smaller of',                 'smaller_of'],
+  ['cosine of',                  'cosine_of'],
+  ['tangent of',                 'tangent_of'],
+  ['sine of',                    'sine_of'],
+  ['skip ahead',                 'skip_ahead'],
+  ['stop loop',                  'stop_loop'],
+  ['ends quote',                 'ends_quote'],
+  ['give back',                  'give_back'],
+  ['divided by',                 'divided_by'],
   ['bitwise and',                'bitwise_and'],
   ['bitwise or',                 'bitwise_or'],
   ['bitwise xor',                'bitwise_xor'],
   ['bitwise not',                'bitwise_not'],
   ['shift left',                 'shift_left'],
   ['shift right',                'shift_right'],
-  ['stop loop',                  'stop_loop'],
-  ['skip to next',               'skip_to_next'],
-  ['skip ahead',                 'skip_ahead'],
-  ['stop everything',            'stop_everything'],
-  ['exit program',               'exit_program'],
-  ['keep going while',           'keep_going_while'],
-  ['count from',                 'count_from'],
-  ['loop forever do',            'loop_forever'],
+  ['print out',                  'print_out'],
+  ['tell me',                    'tell_me'],
+  ['and also',                   'and_also'],
+  ['or else',                    'or_else'],
+  ['at least',                   'at_least'],
+  ['at most',                    'at_most'],
+  ['or if',                      'or_if'],
 ];
 
 class Lexer {
@@ -635,20 +657,32 @@ class Parser {
   }
 
   private parseMultiplicative(): Expr {
-    let expr = this.parseUnary();
+    let expr = this.parsePower();
     while (true) {
       if (this.matchKw('times')) {
-        const right = this.parseUnary();
+        const right = this.parsePower();
         expr = { kind: 'binary', op: '*', left: expr, right };
       } else if (this.matchKw('divided_by')) {
-        const right = this.parseUnary();
+        const right = this.parsePower();
         expr = { kind: 'binary', op: '/', left: expr, right };
       } else if (this.matchKw('modulo') || this.matchKw('mod')) {
-        const right = this.parseUnary();
+        const right = this.parsePower();
         expr = { kind: 'binary', op: '%', left: expr, right };
       } else break;
     }
     return expr;
+  }
+
+  // `X to the power of Y` — right-associative, binds tighter than * /.
+  // Lowered to a `pow(X, Y)` builtin call so the interpreter dispatches
+  // through the same path as the prefix-style builtins.
+  private parsePower(): Expr {
+    const base = this.parseUnary();
+    if (this.matchKw('to_the_power_of')) {
+      const exp = this.parsePower();
+      return { kind: 'call', name: '__builtin_pow', args: [base, exp] };
+    }
+    return base;
   }
 
   private parseUnary(): Expr {
@@ -670,6 +704,45 @@ class Parser {
     }
     if (t.kind === 'KW' && t.value === 'yes')  { this.advance(); return { kind: 'bool', value: true }; }
     if (t.kind === 'KW' && t.value === 'no')   { this.advance(); return { kind: 'bool', value: false }; }
+
+    // Prefix-style math builtins: `square root of X`, `absolute value of X`,
+    // `sine of X`, `cosine of X`, `tangent of X`, `logarithm of X`,
+    // `rounded X`, `rounded up X`, `rounded down X`.
+    const prefixBuiltins: Record<string, string> = {
+      'square_root_of':    '__builtin_sqrt',
+      'absolute_value_of': '__builtin_abs',
+      'sine_of':           '__builtin_sin',
+      'cosine_of':         '__builtin_cos',
+      'tangent_of':        '__builtin_tan',
+      'logarithm_of':      '__builtin_log',
+      'rounded_down':      '__builtin_floor',
+      'rounded_up':        '__builtin_ceil',
+      'rounded':           '__builtin_round',
+    };
+    if (t.kind === 'KW' && t.value in prefixBuiltins) {
+      const fn = prefixBuiltins[t.value];
+      this.advance();
+      const operand = this.parseUnary();
+      return { kind: 'call', name: fn, args: [operand] };
+    }
+
+    // Two-arg math builtins: `maximum of A and B`, `minimum of A and B`,
+    // `bigger of A and B`, `smaller of A and B`.
+    const twoArgBuiltins: Record<string, string> = {
+      'maximum_of': '__builtin_max',
+      'bigger_of':  '__builtin_max',
+      'minimum_of': '__builtin_min',
+      'smaller_of': '__builtin_min',
+    };
+    if (t.kind === 'KW' && t.value in twoArgBuiltins) {
+      const fn = twoArgBuiltins[t.value];
+      this.advance();
+      const a = this.parseTwoArgOperand();
+      this.expectKw('and');
+      const b = this.parseTwoArgOperand();
+      return { kind: 'call', name: fn, args: [a, b] };
+    }
+
     if (t.kind === 'KW' && t.value === 'call') {
       this.advance();
       const name = this.expectIdent();
@@ -685,6 +758,14 @@ class Parser {
       return { kind: 'ident', name: t.value };
     }
     throw new RuntimeErr(`Unexpected token ${t.kind}${t.value ? ' \'' + t.value + '\'' : ''} at line ${t.line}`);
+  }
+
+  /// For `maximum of A and B` we need a tight operand that doesn't try to
+  /// consume the `and` separator. parseUnary is the right shape — it can
+  /// pull a literal, identifier, or nested builtin call but stops before
+  /// binary operators.
+  private parseTwoArgOperand(): Expr {
+    return this.parseUnary();
   }
 
   // ─── Helpers ────────────────────────────────────────────────────
@@ -932,12 +1013,40 @@ class Interpreter {
         throw new RuntimeErr(`Unknown binary operator ${expr.op}`);
       }
       case 'call': {
+        const argVals = expr.args.map(a => this.evalExpr(a, env));
+        // Builtins first — these don't appear in the user's `functions`
+        // map but should still be callable.
+        if (expr.name.startsWith('__builtin_')) {
+          return this.callBuiltin(expr.name, argVals);
+        }
         const fn = this.functions.get(expr.name);
         if (!fn) throw new RuntimeErr(`Unknown function '${expr.name}'`);
-        const argVals = expr.args.map(a => this.evalExpr(a, env));
         return this.callFunction(fn, argVals, env);
       }
     }
+  }
+
+  private callBuiltin(name: string, args: Value[]): Value {
+    const num = (i: number) => {
+      const v = args[i];
+      if (typeof v !== 'number') throw new RuntimeErr(`${name} requires numeric arguments`);
+      return v;
+    };
+    switch (name) {
+      case '__builtin_sqrt':  return Math.sqrt(num(0));
+      case '__builtin_abs':   return Math.abs(num(0));
+      case '__builtin_sin':   return Math.sin(num(0));
+      case '__builtin_cos':   return Math.cos(num(0));
+      case '__builtin_tan':   return Math.tan(num(0));
+      case '__builtin_log':   return Math.log(num(0));
+      case '__builtin_floor': return Math.floor(num(0));
+      case '__builtin_ceil':  return Math.ceil(num(0));
+      case '__builtin_round': return Math.round(num(0));
+      case '__builtin_pow':   return Math.pow(num(0), num(1));
+      case '__builtin_max':   return Math.max(num(0), num(1));
+      case '__builtin_min':   return Math.min(num(0), num(1));
+    }
+    throw new RuntimeErr(`Unknown builtin '${name}'`);
   }
 
   private callFunction(fn: FunctionDecl, args: Value[], _callerEnv: Environment): Value {
