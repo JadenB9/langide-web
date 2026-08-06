@@ -37,6 +37,8 @@ a { color: var(--amber); }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  row-gap: 8px;
   padding: 10px 16px;
   background: var(--title-bar);
   border-bottom: 1px solid var(--card-border);
@@ -63,6 +65,7 @@ a { color: var(--amber); }
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 /* Buttons */
@@ -92,6 +95,15 @@ a { color: var(--amber); }
 .ghost-btn:hover {
   background: var(--title-bar);
   border-color: #333;
+}
+
+/* Keyboard users need to see where they are */
+.run-btn:focus-visible,
+.ghost-btn:focus-visible,
+.def-delete:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
 }
 
 /* Toggle switch (checkbox label) */
@@ -234,6 +246,7 @@ input::placeholder { color: #555; }
   gap: 6px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--card-border);
+  flex-wrap: wrap;
 }
 
 .def-add input { flex: 1; min-width: 140px; }
@@ -342,6 +355,17 @@ input::placeholder { color: #555; }
   border-top: 1px solid var(--card-border);
   text-align: center;
   flex-shrink: 0;
+}
+
+/* iOS zooms the page when a focused control is under 16px, so on touch
+   devices the editor and form controls go up to 16 */
+@media (pointer: coarse) {
+  #editor,
+  select,
+  input[type="text"],
+  input[type="search"] {
+    font-size: 16px;
+  }
 }
 
 /* Responsive — stack on small screens */
