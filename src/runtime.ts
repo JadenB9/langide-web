@@ -19,15 +19,19 @@
 //   • functions:         `task NAME taking TYPE a and TYPE b gives TYPE
 //                          does ... done`, `call NAME with X and Y`,
 //                         `give back EXPR`
-//   • expressions:       + - * / %, comparisons, and also / or else,
-//                         bitwise and/or/xor/not, shift left/right
-//   • boolean literals:  yes / no
+//   • expressions:       plus minus times divided by modulo, comparisons,
+//                         and also / or else, bitwise and/or/xor/not,
+//                         shift left/right, ( parentheses )
+//   • math:              square root of, absolute value of, rounded,
+//                         to the power of, maximum of A and B, …
+//   • literals:          yes / no, -5, 3.14, "text" or quotes … ends quote
 //   • loop control:      stop loop, skip to next, skip ahead
+//   • exit:              stop everything, exit program, quit
 //
-// Out of scope (the user gets a clear message): math functions (sqrt,
-// pow, abs, round, sin, cos, …), input, sleep, arrays, recursion beyond
-// depth 500, and anything that isn't listed above. For those, the UI
-// points at the desktop macOS build.
+// `number` variables hold whole numbers like a C int, so `number half is
+// 7 divided by 2` stores 3. Out of scope: input, sleep and arrays — for
+// those the UI points at the desktop macOS build. Errors carry the line
+// they happened on so the editor can jump there.
 
 type Value = number | string | boolean;
 
@@ -38,6 +42,7 @@ type Value = number | string | boolean;
 type TokKind =
   | 'IDENT' | 'NUMBER' | 'STRING'
   | 'KW'                            // reserved word
+  | 'LPAREN' | 'RPAREN'
   | 'NEWLINE' | 'EOF';
 
 interface Token { kind: TokKind; value: string; line: number; }
@@ -127,6 +132,12 @@ const MULTI_WORD: [string, string][] = [
   ['or if',                      'or_if'],
 ];
 
+// Symbols people type out of habit, and the word the language wants instead
+const SYMBOL_WORDS: Record<string, string> = {
+  '+': 'plus', '-': 'minus', '*': 'times', '/': 'divided by', '%': 'modulo',
+  '=': 'is (or equals)', '<': 'less than', '>': 'greater than',
+};
+
 class Lexer {
   private src: string;
   private pos = 0;
@@ -155,26 +166,57 @@ class Lexer {
       }
 
       // `show quotes TEXT ends quote` — inline string literal form
-      if (this.startsWithIgnoreCase('quotes')) {
+      if (this.startsWithIgnoreCaseWordBoundary('quotes')) {
+        const startLine = this.line;
         this.pos += 'quotes'.length;
         let str = '';
         while (this.pos < this.src.length && !this.startsWithIgnoreCase('ends quote')) {
           if (this.src[this.pos] === '\n') this.line++;
           str += this.src[this.pos++];
         }
-        // Skip `ends quote`
-        if (this.pos < this.src.length) this.pos += 'ends quote'.length;
-        tokens.push({ kind: 'STRING', value: str.trim(), line: this.line });
+        if (this.pos >= this.src.length) {
+          throw new RuntimeErr("this text is missing 'ends quote' after it", startLine);
+        }
+        this.pos += 'ends quote'.length;
+        tokens.push({ kind: 'STRING', value: str.trim(), line: startLine });
         continue;
       }
 
-      if (/[0-9]/.test(c)) {
-        let n = '';
+      // "text" — plain double quotes work too, and keep their spaces
+      if (c === '"') {
+        const end = this.src.indexOf('"', this.pos + 1);
+        const newline = this.src.indexOf('\n', this.pos + 1);
+        if (end === -1 || (newline !== -1 && newline < end)) {
+          throw new RuntimeErr('this text is missing its closing "', this.line);
+        }
+        tokens.push({ kind: 'STRING', value: this.src.slice(this.pos + 1, end), line: this.line });
+        this.pos = end + 1;
+        continue;
+      }
+
+      // A minus sign right before a digit is a negative number, unless it
+      // follows a value (then it was meant as subtraction)
+      const prev = tokens[tokens.length - 1];
+      const afterValue = prev && (prev.kind === 'NUMBER' || prev.kind === 'IDENT' ||
+                                  prev.kind === 'STRING' || prev.kind === 'RPAREN');
+      if (/[0-9]/.test(c) || (c === '-' && !afterValue && /[0-9]/.test(this.src[this.pos + 1] ?? ''))) {
+        let n = c;
+        this.pos++;
         while (this.pos < this.src.length && /[0-9.]/.test(this.src[this.pos])) {
           n += this.src[this.pos++];
         }
         tokens.push({ kind: 'NUMBER', value: n, line: this.line });
         continue;
+      }
+
+      if (c === '(' || c === ')') {
+        tokens.push({ kind: c === '(' ? 'LPAREN' : 'RPAREN', value: c, line: this.line });
+        this.pos++;
+        continue;
+      }
+
+      if (c in SYMBOL_WORDS) {
+        throw new RuntimeErr(`use '${SYMBOL_WORDS[c]}' instead of '${c}'`, this.line);
       }
 
       if (/[A-Za-z_]/.test(c)) {
@@ -203,7 +245,7 @@ class Lexer {
         continue;
       }
 
-      // Unknown char — skip
+      // Other punctuation (commas, full stops, …) is ignored
       this.pos++;
     }
     tokens.push({ kind: 'EOF', value: '', line: this.line });
@@ -237,11 +279,10 @@ class Lexer {
 // AST
 // ─────────────────────────────────────────────────────────────────────
 
-type Stmt =
+type StmtBody =
   | { kind: 'varDecl'; type: string; name: string; init: Expr | null }
   | { kind: 'assign'; name: string; value: Expr }
   | { kind: 'show'; expr: Expr }
-  | { kind: 'showString'; text: string }
   | { kind: 'if'; branches: { cond: Expr; body: Stmt[] }[]; elseBody: Stmt[] | null }
   | { kind: 'while'; cond: Expr; body: Stmt[]; negated: boolean }
   | { kind: 'for'; varName: string; start: Expr; end: Expr; body: Stmt[] }
@@ -250,7 +291,11 @@ type Stmt =
   | { kind: 'return'; value: Expr | null }
   | { kind: 'break' }
   | { kind: 'continue' }
+  | { kind: 'exit' }
   | { kind: 'exprStmt'; expr: Expr };
+
+// Every statement remembers its source line for error messages
+type Stmt = StmtBody & { line: number };
 
 type Expr =
   | { kind: 'num'; value: number }
@@ -263,6 +308,7 @@ type Expr =
 
 interface FunctionDecl {
   name: string;
+  line: number;
   params: { type: string; name: string }[];
   returnType: string;
   body: Stmt[];
@@ -301,6 +347,7 @@ class Parser {
 
   // ─── Functions ──────────────────────────────────────────────────
   private parseFunction(): FunctionDecl {
+    const line = this.peek().line;
     this.expectKw('task');
     const name = this.expectIdent();
     const params: { type: string; name: string }[] = [];
@@ -321,10 +368,9 @@ class Parser {
     }
 
     this.expectKw('does');
-    const body = this.parseBlock(['done']);
-    this.expectKw('done');
+    const body = this.parseBlock(`task ${name}`, line);
 
-    return { name, params, returnType, body };
+    return { name, line, params, returnType, body };
   }
 
   private parseType(): string {
@@ -334,28 +380,32 @@ class Parser {
     if (this.matchKw('truth'))           return 'bool';
     if (this.matchKw('talking'))         return 'string';
     if (this.matchKw('nothing'))         return 'void';
-    throw new RuntimeErr(`Expected a type (number, decimal, truth, talking, nothing) at line ${this.peek().line}`);
+    throw new RuntimeErr(`expected a type (number, decimal, truth, talking or nothing) but found ${this.describe(this.peek())}`, this.peek().line);
   }
 
-  private parseBlock(terminators: string[]): Stmt[] {
+  // Statements up to and including the block's closing `done`. `opener`
+  // names the block so a missing `done` can say which one it belongs to.
+  private parseBlock(opener: string, openLine: number): Stmt[] {
     const body: Stmt[] = [];
-    while (!this.isAtEnd() && !this.isAtBlockEnd(terminators)) {
+    while (!this.isAtEnd() && !this.checkKw('done')) {
       body.push(this.parseStatement());
     }
+    this.expectDone(opener, openLine);
     return body;
   }
 
-  private isAtBlockEnd(terminators: string[]): boolean {
-    const p = this.peek();
-    if (p.kind !== 'KW') return false;
-    if (terminators.includes(p.value)) return true;
-    // `or if` / `otherwise` terminate if-branch bodies. Callers pass
-    // ['done'] and let if-parsing peek for these separately.
-    return false;
+  private expectDone(opener: string, openLine: number): void {
+    if (this.matchKw('done')) return;
+    throw new RuntimeErr(`'${opener}' (line ${openLine}) is missing its closing 'done'`, openLine);
   }
 
   // ─── Statements ─────────────────────────────────────────────────
   private parseStatement(): Stmt {
+    const line = this.peek().line;
+    return { ...this.parseStatementBody(), line };
+  }
+
+  private parseStatementBody(): StmtBody {
     // Variable decl: type IDENT [is EXPR]
     if (this.checkKw('number') || this.checkKw('decimal') ||
         this.checkKw('precise_decimal') || this.checkKw('truth')) {
@@ -371,11 +421,9 @@ class Parser {
     if (this.checkKw('talking')) {
       this.advance();
       const name = this.expectIdent();
-      this.matchKw('is'); // optional
+      // `is` is optional before a quoted string
       let init: Expr | null = null;
-      if (this.peek().kind === 'STRING') {
-        init = { kind: 'str', value: this.advance().value };
-      } else if (!this.isAtEnd()) {
+      if (this.matchKw('is') || this.peek().kind === 'STRING') {
         init = this.parseExpression();
       }
       return { kind: 'varDecl', type: 'string', name, init };
@@ -407,32 +455,26 @@ class Parser {
     // Print family
     if (this.matchKw('show') || this.matchKw('tell_me') || this.matchKw('say') ||
         this.matchKw('display') || this.matchKw('print_out') || this.matchKw('print')) {
-      if (this.peek().kind === 'STRING') {
-        const s = this.advance().value;
-        return { kind: 'showString', text: s };
-      }
-      const expr = this.parseExpression();
-      return { kind: 'show', expr };
+      return { kind: 'show', expr: this.parseExpression() };
     }
 
-    if (this.matchKw('if')) {
+    if (this.checkKw('if')) {
       return this.parseIf();
     }
 
+    const startLine = this.peek().line;
     if (this.matchKw('repeat')) {
       // `repeat while`, `repeat until`, `repeat for`, `repeat N times`
       if (this.matchKw('while')) {
         const cond = this.parseExpression();
         this.expectKw('do');
-        const body = this.parseBlock(['done']);
-        this.expectKw('done');
+        const body = this.parseBlock('repeat while', startLine);
         return { kind: 'while', cond, body, negated: false };
       }
       if (this.matchKw('until')) {
         const cond = this.parseExpression();
         this.expectKw('do');
-        const body = this.parseBlock(['done']);
-        this.expectKw('done');
+        const body = this.parseBlock('repeat until', startLine);
         return { kind: 'while', cond, body, negated: true };
       }
       if (this.matchKw('for')) {
@@ -442,8 +484,7 @@ class Parser {
         this.expectKw('to');
         const end = this.parseExpression();
         this.expectKw('do');
-        const body = this.parseBlock(['done']);
-        this.expectKw('done');
+        const body = this.parseBlock(`repeat for ${varName}`, startLine);
         return { kind: 'for', varName, start, end, body };
       }
       // `repeat N times do ... done`
@@ -459,20 +500,18 @@ class Parser {
         this.advance();
         count = { kind: 'ident', name: countTok.value };
       } else {
-        throw new RuntimeErr(`Expected a count after 'repeat' at line ${countTok.line}`);
+        throw new RuntimeErr(`'repeat' needs while, until, for, or a count like 'repeat 5 times do'`, countTok.line);
       }
       this.expectKw('times');
       this.expectKw('do');
-      const body = this.parseBlock(['done']);
-      this.expectKw('done');
+      const body = this.parseBlock('repeat … times', startLine);
       return { kind: 'repeatN', count, body };
     }
 
     if (this.matchKw('keep_going_while')) {
       const cond = this.parseExpression();
       this.expectKw('do');
-      const body = this.parseBlock(['done']);
-      this.expectKw('done');
+      const body = this.parseBlock('keep going while', startLine);
       return { kind: 'while', cond, body, negated: false };
     }
     if (this.matchKw('count_from')) {
@@ -480,18 +519,16 @@ class Parser {
       this.expectKw('to');
       const end = this.parseExpression();
       this.expectKw('do');
-      const body = this.parseBlock(['done']);
-      this.expectKw('done');
+      const body = this.parseBlock('count from', startLine);
       return { kind: 'for', varName: '_c', start, end, body };
     }
     if (this.matchKw('loop_forever')) {
-      const body = this.parseBlock(['done']);
-      this.expectKw('done');
+      const body = this.parseBlock('loop forever', startLine);
       return { kind: 'loopForever', body };
     }
 
     if (this.matchKw('give_back')) {
-      if (this.isAtBlockEnd(['done']) || this.peek().kind === 'EOF') {
+      if (this.checkKw('done') || this.isAtEnd()) {
         return { kind: 'return', value: null };
       }
       return { kind: 'return', value: this.parseExpression() };
@@ -501,15 +538,32 @@ class Parser {
     if (this.matchKw('skip_to_next') || this.matchKw('skip_ahead')) return { kind: 'continue' };
 
     if (this.matchKw('stop_everything') || this.matchKw('exit_program') || this.matchKw('quit')) {
-      throw new ExitSignal();
+      return { kind: 'exit' };
     }
 
-    // Fallback: treat as expression statement (e.g. a bare `call foo ...`)
-    const expr = this.parseExpression();
-    return { kind: 'exprStmt', expr };
+    // `x is 5` / `x be 5` — the C habit of assigning without `make`
+    const t = this.peek();
+    const next = this.tokens[this.pos + 1];
+    if (t.kind === 'IDENT' && next.kind === 'KW' && (next.value === 'is' || next.value === 'be')) {
+      throw new RuntimeErr(`to change '${t.value}' write 'make ${t.value} be …' (or declare it with 'number ${t.value} is …')`, t.line);
+    }
+
+    // The only expression that works as a statement on its own is a call
+    if (this.checkKw('call')) {
+      return { kind: 'exprStmt', expr: this.parseExpression() };
+    }
+
+    if (t.kind === 'IDENT') {
+      const guess = closest(t.value, STATEMENT_WORDS);
+      const hint = guess ? ` — did you mean '${guess}'?` : '';
+      throw new RuntimeErr(`'${t.value}' isn't a command I know${hint}`, t.line);
+    }
+    throw new RuntimeErr(`a line can't start with ${this.describe(t)}`, t.line);
   }
 
-  private parseIf(): Stmt {
+  private parseIf(): StmtBody {
+    const startLine = this.peek().line;
+    this.expectKw('if');
     const branches: { cond: Expr; body: Stmt[] }[] = [];
     const firstCond = this.parseExpression();
     this.expectKw('then');
@@ -527,7 +581,7 @@ class Parser {
     if (this.matchKw('otherwise')) {
       elseBody = this.parseIfBody();
     }
-    this.expectKw('done');
+    this.expectDone('if', startLine);
     return { kind: 'if', branches, elseBody };
   }
 
@@ -702,6 +756,15 @@ class Parser {
       this.advance();
       return { kind: 'str', value: t.value };
     }
+    if (t.kind === 'LPAREN') {
+      this.advance();
+      const inner = this.parseExpression();
+      if (this.peek().kind !== 'RPAREN') {
+        throw new RuntimeErr(`missing ')' — found ${this.describe(this.peek())} instead`, t.line);
+      }
+      this.advance();
+      return inner;
+    }
     if (t.kind === 'KW' && t.value === 'yes')  { this.advance(); return { kind: 'bool', value: true }; }
     if (t.kind === 'KW' && t.value === 'no')   { this.advance(); return { kind: 'bool', value: false }; }
 
@@ -757,7 +820,7 @@ class Parser {
       this.advance();
       return { kind: 'ident', name: t.value };
     }
-    throw new RuntimeErr(`Unexpected token ${t.kind}${t.value ? ' \'' + t.value + '\'' : ''} at line ${t.line}`);
+    throw new RuntimeErr(`expected a value but found ${this.describe(t)}`, t.line);
   }
 
   /// For `maximum of A and B` we need a tight operand that doesn't try to
@@ -786,14 +849,23 @@ class Parser {
   private expectKw(value: string): void {
     if (!this.matchKw(value)) {
       const t = this.peek();
-      throw new RuntimeErr(`Expected '${value.replace(/_/g, ' ')}' at line ${t.line}, got '${t.value || t.kind}'`);
+      throw new RuntimeErr(`expected '${value.replace(/_/g, ' ')}' but found ${this.describe(t)}`, t.line);
     }
   }
   private expectIdent(): string {
     const t = this.peek();
-    if (t.kind !== 'IDENT') throw new RuntimeErr(`Expected a name at line ${t.line}, got '${t.value || t.kind}'`);
+    if (t.kind !== 'IDENT') {
+      const why = t.kind === 'KW' ? ` ('${t.value.replace(/_/g, ' ')}' is a reserved word)` : '';
+      throw new RuntimeErr(`expected a name but found ${this.describe(t)}${why}`, t.line);
+    }
     this.advance();
     return t.value;
+  }
+  // How a token reads in an error message
+  private describe(t: Token): string {
+    if (t.kind === 'EOF') return 'the end of the program';
+    if (t.kind === 'STRING') return 'some text';
+    return `'${t.value.replace(/_/g, ' ')}'`;
   }
 }
 
@@ -801,88 +873,154 @@ class Parser {
 // Interpreter
 // ─────────────────────────────────────────────────────────────────────
 
-class RuntimeErr extends Error {}
+class RuntimeErr extends Error {
+  constructor(message: string, public line?: number) { super(message); }
+}
 class BreakSignal {}
 class ContinueSignal {}
 class ExitSignal {}
 class ReturnSignal { constructor(public value: Value | null) {} }
 
+const MAX_CALL_DEPTH = 500;
+const MAX_OUTPUT_LINES = 10_000;
+
+// Words a statement can start with, for "did you mean" on a typo
+const STATEMENT_WORDS = [
+  'show', 'say', 'display', 'print', 'tell me', 'make', 'remember',
+  'increase', 'decrease', 'if', 'otherwise', 'repeat', 'count from',
+  'loop forever', 'keep going while', 'give back', 'call', 'stop loop',
+  'skip to next', 'quit', 'number', 'decimal', 'truth', 'talking', 'done',
+];
+
+// The candidate within two edits of `word`, if there is one
+function closest(word: string, candidates: Iterable<string>): string | null {
+  let best: string | null = null;
+  let bestDist = 3;
+  for (const c of candidates) {
+    const d = editDistance(word.toLowerCase(), c.toLowerCase());
+    if (d < bestDist) { best = c; bestDist = d; }
+  }
+  return best;
+}
+
+function editDistance(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+interface Variable { value: Value; type: string | null; }
+
 class Environment {
-  private vars = new Map<string, Value>();
+  private vars = new Map<string, Variable>();
   constructor(public parent: Environment | null = null) {}
+  private lookup(name: string): Variable | undefined {
+    return this.vars.get(name) ?? this.parent?.lookup(name);
+  }
   get(name: string): Value {
-    if (this.vars.has(name)) return this.vars.get(name)!;
-    if (this.parent) return this.parent.get(name);
-    throw new RuntimeErr(`Unknown variable '${name}'`);
+    const v = this.lookup(name);
+    if (v) return v.value;
+    const guess = closest(name, this.names());
+    const hint = guess ? ` — did you mean '${guess}'?` : ` — declare it first, e.g. 'number ${name} is 0'`;
+    throw new RuntimeErr(`Unknown variable '${name}'${hint}`);
   }
   set(name: string, value: Value): void {
-    if (this.vars.has(name)) { this.vars.set(name, value); return; }
-    if (this.parent && this.parent.has(name)) { this.parent.set(name, value); return; }
-    this.vars.set(name, value);
+    const v = this.lookup(name);
+    if (v) v.value = coerce(value, v.type, name);
+    else this.vars.set(name, { value, type: null });
   }
-  has(name: string): boolean {
-    if (this.vars.has(name)) return true;
-    return this.parent ? this.parent.has(name) : false;
+  has(name: string): boolean { return this.lookup(name) !== undefined; }
+  declare(name: string, value: Value, type: string | null): void {
+    this.vars.set(name, { value: coerce(value, type, name), type });
   }
-  declare(name: string, value: Value): void { this.vars.set(name, value); }
+  names(): string[] {
+    return [...this.vars.keys(), ...(this.parent ? this.parent.names() : [])];
+  }
+}
+
+// Store a value the way C would for the declared type: a `number` (int)
+// drops the fraction, and text can't go into a numeric variable.
+function coerce(value: Value, type: string | null, name: string): Value {
+  if (type === 'int' || type === 'float' || type === 'double') {
+    if (typeof value === 'string') {
+      throw new RuntimeErr(`'${name}' holds numbers, so it can't store text — use 'talking ${name}' for text`);
+    }
+    const n = typeof value === 'boolean' ? (value ? 1 : 0) : value;
+    return type === 'int' ? Math.trunc(n) : n;
+  }
+  return value;
 }
 
 class Interpreter {
   private functions = new Map<string, FunctionDecl>();
-  private output: string[] = [];
+  private globals = new Environment();
+  output: string[] = [];
+  // Line of the statement being run, attached to any error it throws
+  line = 0;
   private steps = 0;
+  private depth = 0;
   private readonly STEP_LIMIT = 2_000_000;
 
-  run(program: Program): string {
+  run(program: Program): void {
     for (const fn of program.functions) {
       this.functions.set(fn.name, fn);
     }
-    // Execute top-level statements (rare) then main().
-    const globalEnv = new Environment();
-    for (const stmt of program.statements) this.execStmt(stmt, globalEnv);
-
     const main = this.functions.get('main');
-    if (main) {
-      try {
-        this.callFunction(main, [], globalEnv);
-      } catch (e) {
-        if (e instanceof ExitSignal) { /* normal */ }
-        else throw e;
-      }
+    if (!main && program.statements.length === 0) {
+      throw new RuntimeErr("nothing to run — put your program inside 'task main does … done'", 1);
     }
-    return this.output.join('\n') + (this.output.length ? '\n' : '');
+    try {
+      // Top-level statements (globals) run first, then main()
+      for (const stmt of program.statements) this.execStmt(stmt, this.globals);
+      if (main) this.callFunction(main, []);
+    } catch (e) {
+      if (!(e instanceof ExitSignal)) throw e;
+    }
   }
 
   private execBlock(stmts: Stmt[], env: Environment): void {
     for (const s of stmts) this.execStmt(s, env);
   }
 
-  private execStmt(stmt: Stmt, env: Environment): void {
+  private tick(): void {
     if (++this.steps > this.STEP_LIMIT) {
-      throw new RuntimeErr('Execution step limit reached (possible infinite loop)');
+      throw new RuntimeErr('the program ran too long and was stopped (is there a loop that never ends?)');
     }
+  }
+
+  private execStmt(stmt: Stmt, env: Environment): void {
+    this.tick();
+    this.line = stmt.line;
     switch (stmt.kind) {
       case 'varDecl': {
         const v = stmt.init ? this.evalExpr(stmt.init, env) : this.defaultValueFor(stmt.type);
-        env.declare(stmt.name, v);
+        env.declare(stmt.name, v, stmt.type);
         return;
       }
       case 'assign': {
-        if (!env.has(stmt.name)) env.declare(stmt.name, 0);
-        env.set(stmt.name, this.evalExpr(stmt.value, env));
+        const v = this.evalExpr(stmt.value, env);
+        this.line = stmt.line;
+        env.set(stmt.name, v);
         return;
       }
       case 'show': {
         const v = this.evalExpr(stmt.expr, env);
+        if (this.output.length >= MAX_OUTPUT_LINES) {
+          throw new RuntimeErr(`stopped after ${MAX_OUTPUT_LINES.toLocaleString('en-US')} lines of output (is there a loop that never ends?)`);
+        }
         this.output.push(this.formatValue(v));
-        return;
-      }
-      case 'showString': {
-        this.output.push(stmt.text);
         return;
       }
       case 'if': {
         for (const b of stmt.branches) {
+          this.line = stmt.line;
           if (this.truthy(this.evalExpr(b.cond, env))) {
             this.execBlock(b.body, new Environment(env));
             return;
@@ -892,71 +1030,40 @@ class Interpreter {
         return;
       }
       case 'while': {
-        const loopEnv = new Environment(env);
-        let iter = 0;
         while (true) {
-          let condVal = this.truthy(this.evalExpr(stmt.cond, loopEnv));
+          this.line = stmt.line;
+          let condVal = this.truthy(this.evalExpr(stmt.cond, env));
           if (stmt.negated) condVal = !condVal;
           if (!condVal) break;
-          if (++iter > 1_000_000) throw new RuntimeErr('Loop iteration limit reached');
-          try {
-            this.execBlock(stmt.body, loopEnv);
-          } catch (e) {
-            if (e instanceof BreakSignal) return;
-            if (e instanceof ContinueSignal) continue;
-            throw e;
-          }
+          if (this.runLoopBody(stmt.body, new Environment(env))) return;
         }
         return;
       }
       case 'for': {
         const loopEnv = new Environment(env);
-        const startV = this.evalExpr(stmt.start, loopEnv);
-        const endV = this.evalExpr(stmt.end, loopEnv);
+        const startV = this.evalExpr(stmt.start, env);
+        const endV = this.evalExpr(stmt.end, env);
         if (typeof startV !== 'number' || typeof endV !== 'number') {
-          throw new RuntimeErr('for-loop bounds must be numbers');
+          throw new RuntimeErr('the from and to of a loop must be numbers');
         }
-        loopEnv.declare(stmt.varName, startV);
-        let iter = 0;
+        loopEnv.declare(stmt.varName, startV, 'int');
         while ((loopEnv.get(stmt.varName) as number) < endV) {
-          if (++iter > 1_000_000) throw new RuntimeErr('Loop iteration limit reached');
-          try {
-            this.execBlock(stmt.body, loopEnv);
-          } catch (e) {
-            if (e instanceof BreakSignal) return;
-            if (e instanceof ContinueSignal) {
-              // fall through to increment
-            } else throw e;
-          }
+          if (this.runLoopBody(stmt.body, new Environment(loopEnv))) return;
           loopEnv.set(stmt.varName, (loopEnv.get(stmt.varName) as number) + 1);
         }
         return;
       }
       case 'repeatN': {
         const countV = this.evalExpr(stmt.count, env);
-        if (typeof countV !== 'number') throw new RuntimeErr('repeat count must be a number');
+        if (typeof countV !== 'number') throw new RuntimeErr('the repeat count must be a number');
         for (let i = 0; i < countV; i++) {
-          try {
-            this.execBlock(stmt.body, new Environment(env));
-          } catch (e) {
-            if (e instanceof BreakSignal) return;
-            if (e instanceof ContinueSignal) continue;
-            throw e;
-          }
+          if (this.runLoopBody(stmt.body, new Environment(env))) return;
         }
         return;
       }
       case 'loopForever': {
-        let iter = 0;
         while (true) {
-          if (++iter > 1_000_000) throw new RuntimeErr('Loop iteration limit reached');
-          try {
-            this.execBlock(stmt.body, new Environment(env));
-          } catch (e) {
-            if (e instanceof BreakSignal) return;
-            if (e instanceof ContinueSignal) continue;
-            throw e;
-          }
+          if (this.runLoopBody(stmt.body, new Environment(env))) return;
         }
       }
       case 'return': {
@@ -964,14 +1071,26 @@ class Interpreter {
       }
       case 'break': throw new BreakSignal();
       case 'continue': throw new ContinueSignal();
+      case 'exit': throw new ExitSignal();
       case 'exprStmt': this.evalExpr(stmt.expr, env); return;
     }
   }
 
-  private evalExpr(expr: Expr, env: Environment): Value {
-    if (++this.steps > this.STEP_LIMIT) {
-      throw new RuntimeErr('Execution step limit reached');
+  // Runs one pass of a loop body. Returns true when `stop loop` ran.
+  private runLoopBody(body: Stmt[], env: Environment): boolean {
+    this.tick(); // an empty `loop forever` still has to hit the limit
+    try {
+      this.execBlock(body, env);
+    } catch (e) {
+      if (e instanceof BreakSignal) return true;
+      if (e instanceof ContinueSignal) return false;
+      throw e;
     }
+    return false;
+  }
+
+  private evalExpr(expr: Expr, env: Environment): Value {
+    this.tick();
     switch (expr.kind) {
       case 'num':  return expr.value;
       case 'str':  return expr.value;
@@ -980,7 +1099,7 @@ class Interpreter {
       case 'unary': {
         const v = this.evalExpr(expr.operand, env);
         if (expr.op === '~') {
-          if (typeof v !== 'number') throw new RuntimeErr('bitwise not requires a number');
+          if (typeof v !== 'number') throw new RuntimeErr('bitwise not needs a number');
           return ~v;
         }
         throw new RuntimeErr(`Unknown unary operator ${expr.op}`);
@@ -990,12 +1109,16 @@ class Interpreter {
         const r = this.evalExpr(expr.right, env);
         switch (expr.op) {
           case '+':
-            if (typeof l === 'string' || typeof r === 'string') return String(l) + String(r);
+            if (typeof l === 'string' || typeof r === 'string') return this.formatValue(l) + this.formatValue(r);
             return Number(l) + Number(r);
           case '-': return Number(l) - Number(r);
           case '*': return Number(l) * Number(r);
-          case '/': return Number(l) / Number(r);
-          case '%': return Number(l) % Number(r);
+          case '/':
+            if (Number(r) === 0) throw new RuntimeErr('Division by zero');
+            return Number(l) / Number(r);
+          case '%':
+            if (Number(r) === 0) throw new RuntimeErr('Division by zero (modulo 0)');
+            return Number(l) % Number(r);
           case '<':  return Number(l) <  Number(r);
           case '>':  return Number(l) >  Number(r);
           case '<=': return Number(l) <= Number(r);
@@ -1020,8 +1143,19 @@ class Interpreter {
           return this.callBuiltin(expr.name, argVals);
         }
         const fn = this.functions.get(expr.name);
-        if (!fn) throw new RuntimeErr(`Unknown function '${expr.name}'`);
-        return this.callFunction(fn, argVals, env);
+        if (!fn) {
+          const guess = closest(expr.name, this.functions.keys());
+          const hint = guess ? ` — did you mean '${guess}'?` : '';
+          throw new RuntimeErr(`there's no task called '${expr.name}'${hint}`);
+        }
+        if (argVals.length !== fn.params.length) {
+          const takes = fn.params.length === 1 ? '1 value' : `${fn.params.length} values`;
+          throw new RuntimeErr(`'${fn.name}' takes ${takes} but got ${argVals.length}`);
+        }
+        const callLine = this.line;
+        const result = this.callFunction(fn, argVals);
+        this.line = callLine;
+        return result;
       }
     }
   }
@@ -1029,7 +1163,9 @@ class Interpreter {
   private callBuiltin(name: string, args: Value[]): Value {
     const num = (i: number) => {
       const v = args[i];
-      if (typeof v !== 'number') throw new RuntimeErr(`${name} requires numeric arguments`);
+      if (typeof v !== 'number') {
+        throw new RuntimeErr(`${name.replace('__builtin_', '')} needs a number, not ${this.formatValue(v)}`);
+      }
       return v;
     };
     switch (name) {
@@ -1049,18 +1185,24 @@ class Interpreter {
     throw new RuntimeErr(`Unknown builtin '${name}'`);
   }
 
-  private callFunction(fn: FunctionDecl, args: Value[], _callerEnv: Environment): Value {
-    const fnEnv = new Environment();
-    for (let i = 0; i < fn.params.length; i++) {
-      fnEnv.declare(fn.params[i].name, args[i] ?? this.defaultValueFor(fn.params[i].type));
+  private callFunction(fn: FunctionDecl, args: Value[]): Value {
+    if (this.depth >= MAX_CALL_DEPTH) {
+      throw new RuntimeErr(`too much recursion — '${fn.name}' went ${MAX_CALL_DEPTH} calls deep without finishing`);
     }
+    const fnEnv = new Environment(this.globals);
+    for (let i = 0; i < fn.params.length; i++) {
+      fnEnv.declare(fn.params[i].name, args[i], fn.params[i].type);
+    }
+    this.depth++;
     try {
       this.execBlock(fn.body, fnEnv);
     } catch (e) {
       if (e instanceof ReturnSignal) {
-        return e.value ?? 0;
+        return coerce(e.value ?? 0, fn.returnType, fn.name);
       }
       throw e;
+    } finally {
+      this.depth--;
     }
     return 0;
   }
@@ -1078,13 +1220,15 @@ class Interpreter {
     return false;
   }
 
+  // Numbers print like C's %g: whole numbers as-is, fractions to 6
+  // significant digits (so 0.1 plus 0.2 shows 0.3)
   private formatValue(v: Value): string {
     if (typeof v === 'boolean') return v ? 'true' : 'false';
     if (typeof v === 'number') {
-      if (Number.isInteger(v)) return v.toString();
-      return v.toString();
+      if (Number.isInteger(v) || !Number.isFinite(v)) return v.toString();
+      return Number(v.toPrecision(6)).toString();
     }
-    return String(v);
+    return v;
   }
 }
 
@@ -1096,21 +1240,28 @@ export interface RunResult {
   success: boolean;
   output: string;
   error?: string;
+  // Source line the error points at, when known
+  line?: number;
 }
 
 export function runProgram(source: string): RunResult {
+  const interp = new Interpreter();
+  const outputSoFar = () => interp.output.map(o => o + '\n').join('');
   try {
-    const lexer = new Lexer(source);
-    const tokens = lexer.tokenize();
-    const parser = new Parser(tokens);
-    const program = parser.parse();
-    const interp = new Interpreter();
-    const output = interp.run(program);
-    return { success: true, output };
+    const tokens = new Lexer(source).tokenize();
+    const program = new Parser(tokens).parse();
+    interp.run(program);
+    return { success: true, output: outputSoFar() };
   } catch (e) {
-    if (e instanceof RuntimeErr) return { success: false, output: '', error: e.message };
-    if (e instanceof ExitSignal) return { success: true, output: '' };
-    const msg = (e as Error).message || String(e);
-    return { success: false, output: '', error: msg };
+    if (e instanceof RuntimeErr) {
+      const line = e.line ?? (interp.line || undefined);
+      return { success: false, output: outputSoFar(), error: e.message, line };
+    }
+    // A deeply nested program can still exhaust the JS stack before
+    // MAX_CALL_DEPTH is reached
+    if (e instanceof RangeError) {
+      return { success: false, output: outputSoFar(), error: 'too much recursion — the program ran out of stack', line: interp.line || undefined };
+    }
+    return { success: false, output: outputSoFar(), error: (e as Error).message || String(e) };
   }
 }
