@@ -1,12 +1,12 @@
 // Build script for langide-web.
 //
-// Bundles src/main.ts → dist/langide.js, copies public/index.html and
-// public/styles.css into dist/. Designed to produce a self-contained static
+// Bundles src/main.ts → dist/langide.js and copies everything in public/
+// into dist/. Designed to produce a self-contained static
 // site that can be dropped into any public/ directory (including the
 // j4den.com Cloudflare-hosted frontend).
 
 import esbuild from 'esbuild';
-import { mkdir, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, rm, cp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,12 +35,8 @@ async function build() {
     logLevel: 'info',
   });
 
-  // Copy static assets
-  const html = await readFile(path.join(root, 'public', 'index.html'), 'utf8');
-  await writeFile(path.join(outDir, 'index.html'), html);
-
-  const css = await readFile(path.join(root, 'public', 'styles.css'), 'utf8');
-  await writeFile(path.join(outDir, 'styles.css'), css);
+  // Copy static assets (index.html, styles.css, theme.js)
+  await cp(path.join(root, 'public'), outDir, { recursive: true });
 
   console.log('[langide-web] built →', outDir);
 }

@@ -12,11 +12,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const dist = path.join(root, 'dist');
 
-// Absolute path to j4den's frontend/public — this is the sibling project
-// in ~/Projects/j4den. Adjust if your layout differs.
-const TARGETS = [
-  path.resolve(root, '..', 'j4den', 'frontend', 'public', 'langide'),
-];
+// Defaults to the sibling j4den checkout (../j4den). Pass
+// `--target <dir>` to copy somewhere else, e.g. a j4den worktree:
+//   node scripts/deploy-to-j4den.mjs --target ../j4den-wt/x/frontend/public/langide
+const targetArg = process.argv.indexOf('--target');
+const TARGETS = targetArg !== -1 && process.argv[targetArg + 1]
+  ? [path.resolve(process.argv[targetArg + 1])]
+  : [path.resolve(root, '..', 'j4den', 'frontend', 'public', 'langide')];
 
 async function main() {
   if (!existsSync(dist)) {
