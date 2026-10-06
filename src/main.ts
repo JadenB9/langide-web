@@ -2,8 +2,8 @@
 //
 // Wires up the editor, output, example dropdown, debug toggle, and the
 // language-definitions panel. Everything runs in-browser — no network
-// calls, no server-side execution. User mappings persist in
-// localStorage.
+// calls, no server-side execution. The program you're editing and your
+// mappings persist in localStorage.
 
 import { NaturalLanguageTranslator } from './translator';
 import { runProgram } from './runtime';
@@ -17,6 +17,11 @@ import {
 
 const USER_MAPPINGS_KEY = 'langide-web.userMappings.v1';
 const USE_DEFAULTS_KEY  = 'langide-web.useDefaults';
+const SOURCE_KEY        = 'langide-web.source.v1';
+const THEME_KEY         = 'theme'; // shared with the rest of j4den.com
+
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const MOD = IS_MAC ? '⌘' : 'Ctrl+';
 
 interface AppState {
   source: string;
@@ -25,49 +30,95 @@ interface AppState {
   userMappings: LanguageMapping[];
   filterCategory: MappingCategory | 'all';
   searchText: string;
+  errorLine: number | null;
 }
 
 const state: AppState = {
-  source: EXAMPLES[0].code,
+  source: loadSource(),
   debugMode: false,
   useDefaults: loadUseDefaults(),
   userMappings: loadUserMappings(),
   filterCategory: 'all',
   searchText: '',
+  errorLine: null,
 };
 
 // ─────────────────────────────────────────────────────────────────────
-// Persistence helpers
+// Persistence helpers — storage can throw (private mode, quota), and the
+// app should keep working without it
 // ─────────────────────────────────────────────────────────────────────
+
+function readStorage(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function writeStorage(key: string, value: string): boolean {
+  try { localStorage.setItem(key, value); return true; } catch { return false; }
+}
 
 function loadUserMappings(): LanguageMapping[] {
   try {
-    const raw = localStorage.getItem(USER_MAPPINGS_KEY);
+    const raw = readStorage(USER_MAPPINGS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as LanguageMapping[];
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(m => m && typeof m.customSyntax === 'string' && typeof m.equivalentSyntax === 'string');
+    return parsed
+      .filter(m => m && typeof m.customSyntax === 'string' && typeof m.equivalentSyntax === 'string')
+      .map(m => ({
+        ...m,
+        category: m.category in CATEGORY_LABELS ? m.category : 'other',
+        description: typeof m.description === 'string' ? m.description : 'User-defined',
+        isDefault: false,
+      }));
   } catch {
     return [];
   }
 }
 
 function saveUserMappings(): void {
-  localStorage.setItem(USER_MAPPINGS_KEY, JSON.stringify(state.userMappings));
+  writeStorage(USER_MAPPINGS_KEY, JSON.stringify(state.userMappings));
 }
 
 function loadUseDefaults(): boolean {
-  const v = localStorage.getItem(USE_DEFAULTS_KEY);
+  const v = readStorage(USE_DEFAULTS_KEY);
   return v === null ? true : v === 'true';
 }
 
 function saveUseDefaults(): void {
-  localStorage.setItem(USE_DEFAULTS_KEY, String(state.useDefaults));
+  writeStorage(USE_DEFAULTS_KEY, String(state.useDefaults));
+}
+
+function loadSource(): string {
+  return readStorage(SOURCE_KEY) ?? EXAMPLES[0].code;
+}
+
+let saveTimer: number | undefined;
+let statusTimer: number | undefined;
+
+function saveSource(announce: boolean): void {
+  window.clearTimeout(saveTimer);
+  const ok = writeStorage(SOURCE_KEY, state.source);
+  if (announce) {
+    const status = qs<HTMLSpanElement>('#save-status');
+    status.textContent = ok ? 'saved' : "can't save here (private window?)";
+    window.clearTimeout(statusTimer);
+    statusTimer = window.setTimeout(() => { status.textContent = ''; }, 1600);
+  }
+}
+
+// Autosave shortly after typing stops
+function queueSave(): void {
+  window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => saveSource(false), 400);
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Preprocessing — apply user mappings as simple string substitution
+// Preprocessing — apply user mappings as whole-word substitution
 // ─────────────────────────────────────────────────────────────────────
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 function applyUserPreprocessing(source: string): string {
   if (state.userMappings.length === 0) return source;
@@ -78,7 +129,9 @@ function applyUserPreprocessing(source: string): string {
   for (const m of sorted) {
     if (!m.customSyntax) continue;
     if (m.customSyntax.includes('NAME') || m.customSyntax.includes('VALUE')) continue;
-    result = result.split(m.customSyntax).join(m.equivalentSyntax);
+    // Whole words only, so a mapping for "hi" leaves "this" alone
+    const re = new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(m.customSyntax)}(?![A-Za-z0-9_])`, 'g');
+    result = result.replace(re, () => m.equivalentSyntax);
   }
   return result;
 }
@@ -90,36 +143,157 @@ function applyUserPreprocessing(source: string): string {
 function run(): void {
   const outputEl = qs<HTMLPreElement>('#output-pane');
   const preprocessed = applyUserPreprocessing(state.source);
-
-  // Translator always runs — it's the "show the transformation" feature.
-  const translator = new NaturalLanguageTranslator(preprocessed);
-  const translated = translator.translate();
-
-  // Interpret the original (preprocessed) English source.
   const result = runProgram(preprocessed);
 
-  let text = '';
+  outputEl.textContent = '';
   if (state.debugMode) {
-    text += '— translated intermediate C —\n';
-    text += translated + '\n';
-    text += '\n— execution —\n';
+    // The translator is the "show the transformation" feature
+    const translated = new NaturalLanguageTranslator(preprocessed).translate();
+    outputEl.append(
+      el('span', { class: 'out-note' }, '— translated intermediate C —\n'),
+      translated + '\n',
+      el('span', { class: 'out-note' }, '\n— execution —\n'),
+    );
   }
-  if (result.success) {
-    text += result.output;
-  } else {
-    text += `Error: ${result.error}\n`;
-    if (state.debugMode && result.output) {
-      text += '\n(partial output before error)\n' + result.output;
+
+  outputEl.append(result.output);
+
+  if (!result.success) {
+    const msg = result.error ?? 'something went wrong';
+    const text = msg.charAt(0).toUpperCase() + msg.slice(1);
+    outputEl.append(el('span', { class: 'out-error' },
+      result.line ? `Error on line ${result.line}: ${text}` : `Error: ${text}`));
+    if (result.line) {
+      const line = result.line;
+      const jump = el('button', { type: 'button', class: 'jump-btn' }, `go to line ${line}`);
+      jump.addEventListener('click', () => goToLine(line));
+      outputEl.append(' ', jump);
+    }
+    outputEl.append('\n');
+  } else if (!result.output && !state.debugMode) {
+    // Say so rather than leave a silent pane
+    outputEl.append(el('span', { class: 'out-note' }, '(program ran — no output)\n'));
+  }
+
+  state.errorLine = result.success ? null : result.line ?? null;
+  renderGutter();
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Editor — line-number gutter, jump to line, indentation keys
+// ─────────────────────────────────────────────────────────────────────
+
+let gutterLines = 0;
+
+function renderGutter(): void {
+  const gutter = qs<HTMLDivElement>('#gutter');
+  const count = state.source.split('\n').length;
+  if (count !== gutterLines) {
+    gutter.textContent = '';
+    for (let i = 1; i <= count; i++) gutter.append(el('div', {}, String(i)));
+    gutterLines = count;
+  }
+  gutter.querySelector('.err')?.classList.remove('err');
+  if (state.errorLine && state.errorLine <= count) {
+    gutter.children[state.errorLine - 1].classList.add('err');
+  }
+  gutter.scrollTop = qs<HTMLTextAreaElement>('#editor').scrollTop;
+}
+
+function goToLine(line: number): void {
+  const editor = qs<HTMLTextAreaElement>('#editor');
+  const lines = editor.value.split('\n');
+  let start = 0;
+  for (let i = 0; i < line - 1 && i < lines.length; i++) start += lines[i].length + 1;
+  const end = start + (lines[line - 1]?.length ?? 0);
+  editor.focus();
+  editor.setSelectionRange(start, end);
+  // Bring the line into view, roughly centered
+  const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 20;
+  editor.scrollTop = Math.max(0, (line - 1) * lineHeight - editor.clientHeight / 2);
+}
+
+// execCommand keeps the browser's undo history intact; setRangeText is
+// the fallback where it's unavailable
+function insertText(editor: HTMLTextAreaElement, text: string): void {
+  if (!document.execCommand('insertText', false, text)) {
+    editor.setRangeText(text, editor.selectionStart, editor.selectionEnd, 'end');
+    editor.dispatchEvent(new Event('input'));
+  }
+}
+
+// Escape lets the next Tab leave the editor instead of indenting, so
+// keyboard users are never trapped in it
+let tabReleased = false;
+
+function handleEditorKeys(e: KeyboardEvent): void {
+  const editor = e.currentTarget as HTMLTextAreaElement;
+  if (e.key === 'Escape') { tabReleased = true; return; }
+  if (e.key === 'Tab' && !tabReleased && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    if (e.shiftKey) outdentLine(editor);
+    else insertText(editor, '  ');
+    return;
+  }
+  tabReleased = false;
+
+  // Enter keeps the current line's indentation
+  if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.isComposing) {
+    const before = editor.value.slice(0, editor.selectionStart);
+    const indent = before.slice(before.lastIndexOf('\n') + 1).match(/^[ \t]*/)![0];
+    if (indent) {
+      e.preventDefault();
+      insertText(editor, '\n' + indent);
     }
   }
+}
 
-  // If output is empty and the program parsed, let the user know nothing
-  // was printed (rather than a silent pane).
-  if (result.success && !result.output && !state.debugMode) {
-    text = '(program ran — no output)\n';
+// Shift+Tab removes up to two leading spaces from the caret's line
+function outdentLine(editor: HTMLTextAreaElement): void {
+  const caret = editor.selectionStart;
+  const lineStart = editor.value.lastIndexOf('\n', caret - 1) + 1;
+  const spaces = editor.value.slice(lineStart, lineStart + 2).match(/^ */)![0].length;
+  if (!spaces) return;
+  editor.setSelectionRange(lineStart, lineStart + spaces);
+  if (!document.execCommand('delete')) {
+    editor.setRangeText('');
+    editor.dispatchEvent(new Event('input'));
   }
+  const back = Math.max(lineStart, caret - spaces);
+  editor.setSelectionRange(back, back);
+}
 
-  outputEl.textContent = text;
+function setSource(code: string): void {
+  state.source = code;
+  qs<HTMLTextAreaElement>('#editor').value = code;
+  state.errorLine = null;
+  renderGutter();
+  saveSource(false);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Theme — same localStorage key and attribute as the rest of the site
+// ─────────────────────────────────────────────────────────────────────
+
+function isLight(): boolean {
+  return document.documentElement.getAttribute('data-theme') === 'light';
+}
+
+function renderThemeButton(): void {
+  const btn = qs<HTMLButtonElement>('#theme-btn');
+  // Names the theme you'd switch to, like the site's toggle
+  btn.textContent = isLight() ? 'dark' : 'light';
+  const label = isLight() ? 'Switch to dark theme' : 'Switch to light theme';
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+}
+
+function toggleTheme(): void {
+  const next = isLight() ? 'dark' : 'light';
+  if (next === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  else document.documentElement.removeAttribute('data-theme');
+  writeStorage(THEME_KEY, next);
+  renderThemeButton();
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -171,7 +345,7 @@ function getFilteredMappings(): LanguageMapping[] {
 
 function renderDefinitions(): void {
   const listEl = qs<HTMLDivElement>('#definitions-list');
-  listEl.innerHTML = '';
+  listEl.textContent = '';
 
   const mappings = getFilteredMappings();
   const count = qs<HTMLSpanElement>('#def-count');
@@ -190,7 +364,7 @@ function renderDefinitions(): void {
         el('span', { class: 'def-badge' }, m.isDefault ? 'default' : 'user')
       ),
       el('div', { class: 'def-custom' }, m.customSyntax),
-      el('div', { class: 'def-arrow' }, '→'),
+      el('div', { class: 'def-arrow', 'aria-hidden': 'true' }, '→'),
       el('div', { class: 'def-equiv' }, m.equivalentSyntax),
     );
     if (m.description) {
@@ -198,7 +372,11 @@ function renderDefinitions(): void {
     }
     if (!m.isDefault) {
       const actions = el('div', { class: 'def-actions' });
-      const del = el('button', { class: 'def-delete', type: 'button' }, '✕');
+      const del = el('button', {
+        class: 'def-delete',
+        type: 'button',
+        'aria-label': `Delete mapping "${m.customSyntax}"`,
+      }, '✕');
       del.addEventListener('click', () => {
         state.userMappings = state.userMappings.filter(u => u.id !== m.id);
         saveUserMappings();
@@ -212,13 +390,18 @@ function renderDefinitions(): void {
 }
 
 function addUserMapping(): void {
-  const cust = qs<HTMLInputElement>('#new-custom').value.trim();
-  const equiv = qs<HTMLInputElement>('#new-equiv').value.trim();
+  const custInput = qs<HTMLInputElement>('#new-custom');
+  const equivInput = qs<HTMLInputElement>('#new-equiv');
+  const msg = qs<HTMLSpanElement>('#def-add-msg');
+  const cust = custInput.value.trim();
+  const equiv = equivInput.value.trim();
   const cat = qs<HTMLSelectElement>('#new-category').value as MappingCategory;
   if (!cust || !equiv) {
-    alert('Both "your phrase" and "becomes" are required.');
+    msg.textContent = 'Fill in both "your phrase" and "becomes".';
+    (cust ? equivInput : custInput).focus();
     return;
   }
+  msg.textContent = '';
   const mapping: LanguageMapping = {
     id: 'user-' + Math.random().toString(36).slice(2, 10),
     customSyntax: cust,
@@ -229,8 +412,9 @@ function addUserMapping(): void {
   };
   state.userMappings.push(mapping);
   saveUserMappings();
-  qs<HTMLInputElement>('#new-custom').value = '';
-  qs<HTMLInputElement>('#new-equiv').value = '';
+  custInput.value = '';
+  equivInput.value = '';
+  custInput.focus();
   renderDefinitions();
 }
 
@@ -247,10 +431,14 @@ function mount(): void {
   }
   dropdown.addEventListener('change', () => {
     const ex = EXAMPLES.find(e => e.name === dropdown.value);
-    if (ex) {
-      state.source = ex.code;
-      qs<HTMLTextAreaElement>('#editor').value = ex.code;
-    }
+    // Back to the placeholder so the same example can be picked again
+    dropdown.selectedIndex = 0;
+    if (!ex) return;
+    // Only ask when the editor holds the user's own work
+    const ownWork = state.source.trim() !== '' && !EXAMPLES.some(e => e.code === state.source);
+    if (ownWork && !confirm(`Replace your program with the "${ex.name}" example?`)) return;
+    setSource(ex.code);
+    run();
   });
 
   // Populate category dropdowns
@@ -271,21 +459,42 @@ function mount(): void {
   // Editor
   const editor = qs<HTMLTextAreaElement>('#editor');
   editor.value = state.source;
-  editor.addEventListener('input', () => { state.source = editor.value; });
+  editor.addEventListener('input', () => {
+    state.source = editor.value;
+    renderGutter();
+    queueSave();
+  });
+  editor.addEventListener('scroll', () => {
+    qs<HTMLDivElement>('#gutter').scrollTop = editor.scrollTop;
+  });
+  editor.addEventListener('keydown', handleEditorKeys);
+  // Don't lose a pending autosave when the tab closes
+  window.addEventListener('pagehide', () => saveSource(false));
+
+  qs<HTMLSpanElement>('#key-hint').textContent = `${MOD}↵ run · ${MOD}S save`;
 
   // Run button
-  qs<HTMLButtonElement>('#run-btn').addEventListener('click', run);
+  const runBtn = qs<HTMLButtonElement>('#run-btn');
+  runBtn.title = `Run (${MOD}Enter)`;
+  runBtn.addEventListener('click', run);
 
   // Clear button
   qs<HTMLButtonElement>('#clear-btn').addEventListener('click', () => {
     qs<HTMLPreElement>('#output-pane').textContent = '';
+    state.errorLine = null;
+    renderGutter();
   });
 
-  // Debug toggle
+  // Theme button
+  renderThemeButton();
+  qs<HTMLButtonElement>('#theme-btn').addEventListener('click', toggleTheme);
+
+  // Debug toggle — re-run so the translation shows (or hides) right away
   const debugToggle = qs<HTMLInputElement>('#debug-toggle');
   debugToggle.checked = state.debugMode;
   debugToggle.addEventListener('change', () => {
     state.debugMode = debugToggle.checked;
+    run();
   });
 
   // Defaults toggle
@@ -308,8 +517,11 @@ function mount(): void {
     renderDefinitions();
   });
 
-  // Add mapping button
-  qs<HTMLButtonElement>('#add-mapping-btn').addEventListener('click', addUserMapping);
+  // Add mapping (a form, so Enter in either field adds it too)
+  qs<HTMLFormElement>('#def-add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    addUserMapping();
+  });
 
   // Search
   const searchInput = qs<HTMLInputElement>('#search-input');
@@ -318,11 +530,15 @@ function mount(): void {
     renderDefinitions();
   });
 
-  // Keyboard: Cmd/Ctrl+Enter runs the program
+  // Keyboard: Cmd/Ctrl+Enter runs, Cmd/Ctrl+S saves
   document.addEventListener('keydown', (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    if (e.key === 'Enter') {
       e.preventDefault();
       run();
+    } else if (e.key.toLowerCase() === 's' && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      saveSource(true);
     }
   });
 

@@ -10,12 +10,13 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';" />
   <meta http-equiv="X-Content-Type-Options" content="nosniff" />
 
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="top-bar">
     <div class="brand">
-      <span class="brand-name">LangIDE</span>
+      <h1 class="brand-name">LangIDE</h1>
       <span class="brand-sub">natural-english programming</span>
     </div>
     <div class="top-actions">
@@ -26,32 +27,38 @@
       <select id="example-select" aria-label="Load example program">
         <option value="" disabled selected>examples…</option>
       </select>
-      <button id="run-btn" type="button" class="run-btn" title="Run (⌘↵)">▶ run</button>
+      <button id="run-btn" type="button" class="run-btn">▶ run</button>
       <button id="clear-btn" type="button" class="ghost-btn">clear</button>
+      <button id="theme-btn" type="button" class="ghost-btn"></button>
     </div>
   </header>
 
   <main class="layout">
-    <section class="editor-pane">
-      <div class="pane-title">editor</div>
-      <textarea id="editor" spellcheck="false" autocapitalize="off" autocorrect="off">
-task main does
-  show quotes Hello, World ends quote
-done</textarea>
+    <section class="editor-pane" aria-label="Editor">
+      <div class="pane-title">
+        <span>editor</span>
+        <span id="save-status" class="pane-hint" aria-live="polite"></span>
+        <span id="key-hint" class="pane-hint keys"></span>
+      </div>
+      <div class="editor-wrap">
+        <div id="gutter" class="gutter" aria-hidden="true"></div>
+        <textarea id="editor" aria-label="Program source" aria-describedby="key-hint editor-help" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" wrap="off"></textarea>
+      </div>
+      <span id="editor-help" class="sr-only">Tab indents. Press Escape, then Tab, to move out of the editor.</span>
     </section>
 
-    <section class="output-pane-wrap">
-      <div class="pane-title">output</div>
-      <pre id="output-pane" aria-live="polite"></pre>
+    <section class="output-pane-wrap" aria-label="Output">
+      <div class="pane-title"><span>output</span></div>
+      <pre id="output-pane" role="log" aria-live="polite" tabindex="0"></pre>
     </section>
   </main>
 
-  <section class="definitions">
+  <section class="definitions" aria-labelledby="def-title">
     <div class="def-header">
-      <div class="def-title">
+      <h2 class="def-title" id="def-title">
         <span>language definitions</span>
         <span class="def-count-badge">(<span id="def-count">0</span>)</span>
-      </div>
+      </h2>
       <div class="def-controls">
         <label class="switch">
           <input type="checkbox" id="defaults-toggle" />
@@ -65,19 +72,20 @@ done</textarea>
       </div>
     </div>
 
-    <div class="def-add">
-      <input id="new-custom" type="text" placeholder="your phrase (e.g. &quot;greet me&quot;)" />
-      <span class="arrow">→</span>
-      <input id="new-equiv" type="text" placeholder="becomes (e.g. print &quot;Hi Jaden&quot;)" />
+    <form id="def-add" class="def-add">
+      <input id="new-custom" type="text" placeholder="your phrase (e.g. &quot;greet me&quot;)" aria-label="Your phrase" />
+      <span class="arrow" aria-hidden="true">→</span>
+      <input id="new-equiv" type="text" placeholder="becomes (e.g. print &quot;Hi Jaden&quot;)" aria-label="Becomes" />
       <select id="new-category" aria-label="Category for new mapping"></select>
-      <button id="add-mapping-btn" type="button" class="run-btn">+ add</button>
-    </div>
+      <button id="add-mapping-btn" type="submit" class="run-btn">+ add</button>
+      <span id="def-add-msg" class="def-add-msg" role="status"></span>
+    </form>
 
     <div id="definitions-list" class="def-list"></div>
   </section>
 
   <footer class="footer">
-    <span>in-browser build — runs the basic examples locally. bitwise, math, and recursion live in the <a href="https://github.com/JadenB9/LangIDE" rel="noopener">macOS build</a>.</span>
+    <span>runs entirely in your browser — nothing is sent anywhere. input, sleep and arrays need the <a href="https://github.com/JadenB9/LangIDE" rel="noopener">macOS build</a>.</span>
   </footer>
 
   <script src="langide.js" defer></script>
