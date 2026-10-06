@@ -156,15 +156,12 @@ export class NaturalLanguageTranslator {
       this.translateForLoop();
       return;
     }
-    if (this.tryTr('count from', 'for (int _c = ', false)) {
-      this.skipSpaces();
-      const start = this.readNumber();
-      this.out += start + ' _c < ';
+    if (this.tryTr('count from', '', false)) {
+      const start = this.readOperand();
       this.skipSpaces();
       this.matchKeyword('to');
-      this.skipSpaces();
-      const end = this.readNumber();
-      this.out += end + ' ; _c = _c + 1) {';
+      const end = this.readOperand();
+      this.out += `for (int _c = ${start}; _c < ${end}; _c = _c + 1) {`;
       this.skipSpaces();
       this.matchKeyword('do');
       return;
@@ -285,8 +282,10 @@ export class NaturalLanguageTranslator {
     if (this.tryTr('with', '(', false)) return;
     if (this.tryTr('and',  ', ')) return;
 
-    // Fallback — copy a single character verbatim
-    this.out += this.source[this.pos++];
+    // Fallback — copy verbatim. A whole word at a time, so keywords are
+    // never matched inside a longer name (`sand` must not become `s, `)
+    const word = this.readIdentifier();
+    this.out += word || this.source[this.pos++];
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -453,17 +452,15 @@ export class NaturalLanguageTranslator {
   private translateForLoop(): void {
     this.skipSpaces();
     const name = this.readIdentifier();
-    this.out += name + ' ';
+    this.out += name;
     this.skipSpaces();
     if (this.matchKeyword('from')) {
-      this.skipSpaces();
-      const start = this.readNumber();
-      this.out += `= ${start} ${name} < `;
+      const start = this.readOperand();
+      this.out += ` = ${start}; ${name} < `;
       this.skipSpaces();
       if (this.matchKeyword('to')) {
-        this.skipSpaces();
-        const end = this.readNumber();
-        this.out += `${end} ; ${name} = ${name} + 1`;
+        const end = this.readOperand();
+        this.out += `${end}; ${name} = ${name} + 1`;
       }
     }
     this.skipSpaces();
@@ -484,7 +481,7 @@ export class NaturalLanguageTranslator {
     this.matchKeyword('do');
 
     const varName = `_i${num}`;
-    this.out += `for (int ${varName} = 0 ${varName} < ${num} ; ${varName} = ${varName} + 1) {`;
+    this.out += `for (int ${varName} = 0; ${varName} < ${num}; ${varName} = ${varName} + 1) {`;
     return true;
   }
 
@@ -523,7 +520,7 @@ export class NaturalLanguageTranslator {
     while (!this.eof()) {
       const rest = this.source.substring(this.pos).toLowerCase();
       if (rest.startsWith('ends quote')) {
-        this.out += '"';
+        this.out = this.out.trimEnd() + '"';
         this.pos += 'ends quote'.length;
         return;
       }
