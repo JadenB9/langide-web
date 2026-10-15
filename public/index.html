@@ -4,14 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LangIDE — Natural English Programming</title>
-  <meta name="description" content="Write real programs in natural English. LangIDE translates sentence-like source code into C and runs it. Browser build." />
+  <meta name="description" content="Write real programs in natural English. LangIDE runs them in your browser and shows the same program as C, Python or JavaScript." />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="theme-color" content="#1a1a1a" />
 
-  <!-- CSP: same-origin everything, no eval, no remote scripts. -->
+  <!-- CSP: same-origin everything, no eval, no remote scripts. The program
+       runs in a same-origin worker (worker-src falls back to script-src). -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';" />
   <meta http-equiv="X-Content-Type-Options" content="nosniff" />
 
-  <script src="theme.js"></script>
-  <link rel="stylesheet" href="styles.css" />
+  <script src="theme.js?v=2"></script>
+  <link rel="stylesheet" href="styles.css?v=2" />
 </head>
 <body>
   <header class="top-bar">
@@ -20,16 +23,39 @@
       <span class="brand-sub">natural-english programming</span>
     </div>
     <div class="top-actions">
-      <label class="switch">
-        <input type="checkbox" id="debug-toggle" />
-        <span>debug</span>
+      <label class="switch" title="Show this program as C, Python or JavaScript">
+        <input type="checkbox" id="code-toggle" />
+        <span>code</span>
       </label>
       <select id="example-select" aria-label="Load example program">
         <option value="" disabled selected>examples…</option>
       </select>
-      <button id="run-btn" type="button" class="run-btn">▶ run</button>
+      <button id="run-btn" type="button" class="run-btn">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>run
+      </button>
+      <button id="stop-btn" type="button" class="stop-btn" hidden>
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg>stop
+      </button>
       <button id="clear-btn" type="button" class="ghost-btn">clear</button>
-      <button id="theme-btn" type="button" class="ghost-btn"></button>
+      <div class="tool-group" role="group" aria-label="Program tools">
+        <button id="share-btn" type="button" class="icon-btn" title="Share link" aria-label="Copy a link to this program">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1l1.7-1.7"/></svg>
+        </button>
+        <button id="download-btn" type="button" class="icon-btn" title="Download program (.txt)" aria-label="Download program as a text file">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M6.5 10.5 12 16l5.5-5.5"/><path d="M4 17v3h16v-3"/></svg>
+        </button>
+        <button id="upload-btn" type="button" class="icon-btn" title="Open a program file" aria-label="Open a program file">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        </button>
+        <input id="file-input" type="file" accept=".txt,.lang,text/plain" hidden />
+        <button id="help-btn" type="button" class="icon-btn" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1.9-1.1 1.8M12 17h.01"/></svg>
+        </button>
+        <button id="theme-btn" type="button" class="icon-btn" title="Switch theme" aria-label="Switch theme">
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.3 5.3l1.7 1.7M17 17l1.7 1.7M18.7 5.3L17 7M7 17l-1.7 1.7"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+        </button>
+      </div>
     </div>
   </header>
 
@@ -42,15 +68,39 @@
       </div>
       <div class="editor-wrap">
         <div id="gutter" class="gutter" aria-hidden="true"></div>
-        <textarea id="editor" aria-label="Program source" aria-describedby="key-hint editor-help" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" wrap="off"></textarea>
+        <div class="editor-body">
+          <div id="line-hl" class="line-hl" hidden aria-hidden="true"></div>
+          <textarea id="editor" aria-label="Program source" aria-describedby="key-hint editor-help" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" wrap="off"></textarea>
+          <div id="autocomplete" class="autocomplete" role="listbox" aria-label="Suggestions" hidden></div>
+        </div>
       </div>
-      <span id="editor-help" class="sr-only">Tab indents. Press Escape, then Tab, to move out of the editor.</span>
+      <span id="editor-help" class="sr-only">Tab indents. Suggestions appear as you type; use the arrow keys and Enter to accept one. Press Escape, then Tab, to move out of the editor.</span>
     </section>
 
-    <section class="output-pane-wrap" aria-label="Output">
-      <div class="pane-title"><span>output</span></div>
-      <pre id="output-pane" role="log" aria-live="polite" tabindex="0"></pre>
-    </section>
+    <div class="right-col">
+      <section class="output-pane-wrap" aria-label="Output">
+        <div class="pane-title">
+          <span>output</span>
+          <span id="run-status" class="pane-hint" aria-live="polite"></span>
+        </div>
+        <pre id="output-pane" role="log" aria-live="polite" tabindex="0"></pre>
+      </section>
+
+      <section class="code-pane" id="code-pane" aria-label="Translated code" hidden>
+        <div class="pane-title">
+          <span>translated</span>
+          <div class="seg" role="group" aria-label="Target language">
+            <button type="button" class="seg-btn" data-target="c">C</button>
+            <button type="button" class="seg-btn" data-target="python">Python</button>
+            <button type="button" class="seg-btn" data-target="javascript">JavaScript</button>
+          </div>
+          <span id="code-status" class="pane-hint" aria-live="polite"></span>
+          <button id="copy-code-btn" type="button" class="mini-btn">copy</button>
+          <button id="download-code-btn" type="button" class="mini-btn">download</button>
+        </div>
+        <pre id="code-pane-body" tabindex="0"></pre>
+      </section>
+    </div>
   </main>
 
   <section class="definitions" aria-labelledby="def-title">
@@ -88,6 +138,27 @@
     <span>runs entirely in your browser — nothing is sent anywhere. input, sleep and arrays need the <a href="https://github.com/JadenB9/LangIDE" rel="noopener">macOS build</a>.</span>
   </footer>
 
-  <script src="langide.js" defer></script>
+  <dialog id="share-dialog" class="dialog" aria-labelledby="share-title">
+    <form method="dialog">
+      <h2 id="share-title">share this program</h2>
+      <p>The whole program is packed into the link itself — nothing is uploaded, and whoever opens it gets exactly what's in the editor now.</p>
+      <div class="dialog-row">
+        <input id="share-url" type="text" readonly aria-label="Share link" />
+        <button id="share-copy-btn" type="button" class="run-btn">copy</button>
+      </div>
+      <p id="share-status" class="dialog-status" aria-live="polite"></p>
+      <div class="dialog-actions"><button type="submit" class="ghost-btn">close</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="help-dialog" class="dialog" aria-labelledby="help-title">
+    <form method="dialog">
+      <h2 id="help-title">keyboard shortcuts</h2>
+      <dl class="keys-list" id="keys-list"></dl>
+      <div class="dialog-actions"><button type="submit" class="ghost-btn">close</button></div>
+    </form>
+  </dialog>
+
+  <script src="langide.js?v=2" defer></script>
 </body>
 </html>
