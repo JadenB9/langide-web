@@ -1,7 +1,7 @@
 // Build script for langide-web.
 //
-// Bundles src/main.ts → dist/langide.js and copies everything in public/
-// into dist/. Designed to produce a self-contained static
+// Bundles src/main.ts → dist/langide.js, src/worker.ts →
+// dist/langide-worker.js, and copies everything in public/ into dist/. Designed to produce a self-contained static
 // site that can be dropped into any public/ directory (including the
 // j4den.com Cloudflare-hosted frontend).
 
@@ -16,6 +16,11 @@ const root = __dirname;
 const outDir = path.join(root, 'dist');
 const watch = process.argv.includes('--watch');
 
+const ENTRIES = {
+  'langide':        path.join(root, 'src', 'main.ts'),
+  'langide-worker': path.join(root, 'src', 'worker.ts'),
+};
+
 async function build() {
   // Fresh dist
   if (existsSync(outDir)) {
@@ -23,15 +28,16 @@ async function build() {
   }
   await mkdir(outDir, { recursive: true });
 
-  // Bundle TS → single JS file (CSP-compatible: no inline scripts)
+  // Bundle TS → two JS files, the page and its worker (CSP-compatible:
+  // no inline scripts)
   await esbuild.build({
-    entryPoints: [path.join(root, 'src', 'main.ts')],
+    entryPoints: ENTRIES,
     bundle: true,
     minify: !watch,
     sourcemap: watch ? 'inline' : false,
     format: 'iife',
     target: ['es2022'],
-    outfile: path.join(outDir, 'langide.js'),
+    outdir: outDir,
     logLevel: 'info',
   });
 
@@ -43,12 +49,12 @@ async function build() {
 
 if (watch) {
   const ctx = await esbuild.context({
-    entryPoints: [path.join(root, 'src', 'main.ts')],
+    entryPoints: ENTRIES,
     bundle: true,
     sourcemap: 'inline',
     format: 'iife',
     target: ['es2022'],
-    outfile: path.join(outDir, 'langide.js'),
+    outdir: outDir,
     logLevel: 'info',
   });
   await ctx.watch();
