@@ -279,7 +279,7 @@ class Lexer {
 // AST
 // ─────────────────────────────────────────────────────────────────────
 
-type StmtBody =
+export type StmtBody =
   | { kind: 'varDecl'; type: string; name: string; init: Expr | null }
   | { kind: 'assign'; name: string; value: Expr }
   | { kind: 'show'; expr: Expr }
@@ -295,9 +295,9 @@ type StmtBody =
   | { kind: 'exprStmt'; expr: Expr };
 
 // Every statement remembers its source line for error messages
-type Stmt = StmtBody & { line: number };
+export type Stmt = StmtBody & { line: number };
 
-type Expr =
+export type Expr =
   | { kind: 'num'; value: number }
   | { kind: 'str'; value: string }
   | { kind: 'bool'; value: boolean }
@@ -306,7 +306,7 @@ type Expr =
   | { kind: 'unary'; op: string; operand: Expr }
   | { kind: 'call'; name: string; args: Expr[] };
 
-interface FunctionDecl {
+export interface FunctionDecl {
   name: string;
   line: number;
   params: { type: string; name: string }[];
@@ -314,7 +314,7 @@ interface FunctionDecl {
   body: Stmt[];
 }
 
-interface Program {
+export interface Program {
   functions: FunctionDecl[];
   statements: Stmt[]; // top-level (rare, typically empty when main is present)
 }
@@ -966,7 +966,25 @@ class Interpreter {
   line = 0;
   private steps = 0;
   private depth = 0;
-  private readonly STEP_LIMIT = 2_000_000;
+  private stepLimit: number;
+  private deadline: number;
+  private onOutput: ((text: string) => void) | undefined;
+  private flushed = 0;      // how many output lines have been sent so far
+  private lastFlush = 0;
+
+  constructor(opts: RunOptions = {}) {
+    this.stepLimit = opts.stepLimit ?? 2_000_000;
+    this.deadline = opts.timeLimitMs ? Date.now() + opts.timeLimitMs : Infinity;
+    this.onOutput = opts.onOutput;
+  }
+
+  // Send any output lines the UI hasn't seen yet
+  flush(): void {
+    if (!this.onOutput || this.flushed >= this.output.length) return;
+    this.onOutput(this.output.slice(this.flushed).map(o => o + '\n').join(''));
+    this.flushed = this.output.length;
+    this.lastFlush = Date.now();
+  }
 
   run(program: Program): void {
     for (const fn of program.functions) {
@@ -990,8 +1008,17 @@ class Interpreter {
   }
 
   private tick(): void {
-    if (++this.steps > this.STEP_LIMIT) {
+    if (++this.steps > this.stepLimit) {
       throw new RuntimeErr('the program ran too long and was stopped (is there a loop that never ends?)');
+    }
+    // Every few thousand steps, look at the clock: stream output to the
+    // UI and give up if the time limit has passed
+    if ((this.steps & 0x1fff) === 0) {
+      const now = Date.now();
+      if (now > this.deadline) {
+        throw new RuntimeErr('the program ran for too long and was stopped (is there a loop that never ends?)');
+      }
+      if (this.onOutput && now - this.lastFlush > 40) this.flush();
     }
   }
 
@@ -1244,12 +1271,27 @@ export interface RunResult {
   line?: number;
 }
 
-export function runProgram(source: string): RunResult {
-  const interp = new Interpreter();
-  const outputSoFar = () => interp.output.map(o => o + '\n').join('');
+export interface RunOptions {
+  // Give up after this many interpreter steps (default 2 million)
+  stepLimit?: number;
+  // ...or after this much wall-clock time
+  timeLimitMs?: number;
+  // Called with new output as the program runs, so a long loop shows its
+  // lines while it's still going instead of all at the end
+  onOutput?: (text: string) => void;
+}
+
+// Lex + parse only. The code generator uses this to turn a program into
+// C, Python or JavaScript without running it.
+export function parseProgram(source: string): Program {
+  return new Parser(new Lexer(source).tokenize()).parse();
+}
+
+export function runProgram(source: string, opts: RunOptions = {}): RunResult {
+  const interp = new Interpreter(opts);
+  const outputSoFar = () => { interp.flush(); return interp.output.map(o => o + '\n').join(''); };
   try {
-    const tokens = new Lexer(source).tokenize();
-    const program = new Parser(tokens).parse();
+    const program = parseProgram(source);
     interp.run(program);
     return { success: true, output: outputSoFar() };
   } catch (e) {

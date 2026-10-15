@@ -1,11 +1,17 @@
 // Tests for the langide-web runtime: canonical programs, error messages
-// (text + line), every dropdown example, and a few translator outputs.
+// (text + line), every dropdown example, a few translator outputs, and
+// the C / Python / JavaScript code generator (the generated programs are
+// actually run with node, python3 and cc when those are installed, and
+// have to print what the interpreter prints).
 // Run with `npm test`.
 
 import { build } from 'esbuild';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -15,7 +21,7 @@ const root = path.resolve(__dirname, '..');
 const tmp = await mkdtemp(path.join(tmpdir(), 'langide-test-'));
 
 await build({
-  entryPoints: ['runtime', 'examples', 'translator'].map(f => path.join(root, 'src', f + '.ts')),
+  entryPoints: ['runtime', 'examples', 'translator', 'codegen'].map(f => path.join(root, 'src', f + '.ts')),
   bundle: true,
   format: 'esm',
   platform: 'node',
@@ -27,6 +33,8 @@ await build({
 const { runProgram } = await import(pathToFileURL(path.join(tmp, 'runtime.js')).href);
 const { EXAMPLES } = await import(pathToFileURL(path.join(tmp, 'examples.js')).href);
 const { NaturalLanguageTranslator } = await import(pathToFileURL(path.join(tmp, 'translator.js')).href);
+const { parseProgram } = await import(pathToFileURL(path.join(tmp, 'runtime.js')).href);
+const { generate } = await import(pathToFileURL(path.join(tmp, 'codegen.js')).href);
 
 const cases = [
   {
@@ -444,6 +452,168 @@ for (const [src, want] of translations) {
     console.log('X   translate: ' + src);
     console.log(`    expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
     failed++;
+  }
+}
+
+// ─── Code generator ───────────────────────────────────────────────
+
+// Exact output for a few shapes that are easy to get wrong
+const codegenCases = [
+  {
+    name: 'c-precedence-and-printf',
+    src: `task main does
+  number x is 2 plus 3 times 4
+  decimal half is 7 divided by 2
+  truth ok is x greater than 10 and also half less than 4
+  show x
+  show half
+  show ok
+  show quotes hi ends quote
+done`,
+    target: 'c',
+    want: `#include <stdio.h>
+#include <stdbool.h>
+
+int main(void) {
+    int x = 2 + 3 * 4;
+    float half = 7 / 2;
+    bool ok = x > 10 && half < 4;
+    printf("%d\\n", x);
+    printf("%g\\n", half);
+    printf("%s\\n", ok ? "true" : "false");
+    printf("%s\\n", "hi");
+    return 0;
+}
+`,
+  },
+  {
+    name: 'python-elif-not-truncate',
+    src: `task sign taking number n gives number does
+  if n less than 0 then
+    give back -1
+  or if n equals 0 then
+    give back 0
+  otherwise
+    give back 1
+  done
+done
+
+task main does
+  number half is 7 divided by 2
+  repeat until half equals 0 do
+    make half be half minus 1
+  done
+  show call sign with half
+done`,
+    target: 'python',
+    want: `def sign(n):
+    if n < 0:
+        return -1
+    elif n == 0:
+        return 0
+    else:
+        return 1
+
+def main():
+    half = int(7 / 2)
+    while not (half == 0):
+        half = half - 1
+    print(sign(half))
+
+main()
+`,
+  },
+  {
+    name: 'js-loops-and-math',
+    src: `number total is 0
+task main does
+  repeat for i from 1 to 4 do
+    make total be total plus i
+  done
+  repeat 2 times do
+    increase total
+  done
+  show total times (total minus 1)
+  show square root of 16 to the power of 2
+  show maximum of total and 3
+done`,
+    target: 'javascript',
+    want: `function main() {
+    for (let i = 1; i < 4; i++) {
+        total = total + i;
+    }
+    for (let _i = 0; _i < 2; _i++) {
+        total = total + 1;
+    }
+    console.log(total * (total - 1));
+    console.log(Math.pow(Math.sqrt(16), 2));
+    console.log(Math.max(total, 3));
+}
+
+let total = 0;
+main();
+`,
+  },
+];
+
+for (const c of codegenCases) {
+  const got = generate(parseProgram(c.src), c.target);
+  if (got === c.want) {
+    console.log('OK  codegen: ' + c.name);
+    passed++;
+  } else {
+    console.log('X   codegen: ' + c.name);
+    console.log('    expected:\n' + c.want + '    got:\n' + got);
+    failed++;
+  }
+}
+
+// Every example, translated and actually run, prints what the
+// interpreter prints. Python and C are skipped when the tool is missing.
+const have = (cmd) => spawnSync('which', [cmd]).status === 0;
+const runners = {
+  javascript: (code) => {
+    const lines = [];
+    vm.runInNewContext(code, { console: { log: (v) => lines.push(String(v)) }, Math });
+    return lines.join('\n');
+  },
+  python: have('python3') ? (code) => {
+    const r = spawnSync('python3', ['-I', '-'], { input: code, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(r.stderr.trim());
+    return r.stdout.trimEnd();
+  } : null,
+  c: have('cc') ? (code, name) => {
+    const src = path.join(tmp, name + '.c');
+    const bin = path.join(tmp, name);
+    writeFileSync(src, code);
+    const cc = spawnSync('cc', ['-o', bin, src, '-lm'], { encoding: 'utf8' });
+    if (cc.status !== 0) throw new Error(cc.stderr.trim());
+    return spawnSync(bin, [], { encoding: 'utf8' }).stdout.trimEnd();
+  } : null,
+};
+
+for (const [target, runIt] of Object.entries(runners)) {
+  if (!runIt) { console.log(`--  ${target}: tool not installed, skipped`); continue; }
+  for (const ex of EXAMPLES) {
+    const want = runProgram(ex.code).output.trimEnd();
+    const code = generate(parseProgram(ex.code), target);
+    let got;
+    try {
+      got = runIt(code, ex.name.replace(/[^a-z0-9]+/gi, '_'));
+    } catch (e) {
+      got = 'FAILED: ' + e.message;
+    }
+    // Python prints whole floats as 4.0 where the interpreter (like C's
+    // %g) prints 4
+    if (target === 'python') got = got.replace(/^(-?\d+)\.0$/gm, '$1');
+    if (got === want) {
+      console.log(`OK  ${target}: ${ex.name}`);
+      passed++;
+    } else {
+      console.log(`X   ${target}: ${ex.name}`);
+      console.log(`    expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
+      failed++;
+    }
   }
 }
 
