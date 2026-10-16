@@ -10,7 +10,7 @@
 
   <!-- CSP: same-origin everything, no eval, no remote scripts. The program
        runs in a same-origin worker (worker-src falls back to script-src). -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';" />
   <meta http-equiv="X-Content-Type-Options" content="nosniff" />
 
   <script src="theme.js?v=2"></script>
